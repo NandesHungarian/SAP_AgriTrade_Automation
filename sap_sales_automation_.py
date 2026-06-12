@@ -6,7 +6,7 @@ processes the exported Excel file (calculating net EUR values, checking IncoTerm
 dynamically prompts the user for missing freight costs via a Tkinter UI, 
 and prepares the final structured management report.
 
-Author: [Ide írd a neved]
+Author: Nándor Magyar
 Disclaimer: All company-specific data, T-codes, user IDs, and internal paths 
 have been anonymized for public sharing. 
 """
