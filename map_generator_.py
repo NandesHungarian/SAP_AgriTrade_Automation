@@ -5,8 +5,11 @@ Generates an interactive HTML map visualizing sales and delivery volumes.
 Draws routes from fulfillment bases to destinations and places dynamic 
 pie-chart markers to represent commodity breakdowns.
 
+Features mutually exclusive layer filtering via JavaScript injection.
+
 Uses Folium (Leaflet.js) and Geopy (Nominatim API).
-Author: [Your Name]
+Author: Nandor Magyar
+Disclaimer: Internal location names and paths have been anonymized.
 """
 
 import pandas as pd
@@ -22,30 +25,81 @@ import tempfile
 import math
 from html import escape
 
-# --- Anonymized Base Locations ---
+# ==============================================================================
+# BASE LOCATIONS & CACHE CONFIGURATION (Anonymized)
+# ==============================================================================
+
 BASES = {
-    "BASE_A": {"lat": 47.0000, "lon": 20.2833}, # Example coords
-    "BASE_B": {"lat": 48.0245, "lon": 16.7784}  # Example coords
+    "BASE_A": {"lat": 47.0000, "lon": 20.2833}, # Example coordinates
+    "BASE_B": {"lat": 48.0245, "lon": 16.7784}  # Example coordinates
 }
 
 CACHE_FILE = os.path.join(os.path.expanduser("~"), "city_coordinates.json")
 
+# ==============================================================================
+# PRODUCT CONFIGURATION
+# ==============================================================================
+
 PRODUCT_CONFIG = {
-    "RAPESEED": {"label": "Rapeseed", "color": "#FFD400", "enabled": True, "aliases": ["RAPESEED", "RAPE"]},
-    "SUNFLOWER": {"label": "Sunflower", "color": "#2E8B57", "enabled": True, "aliases": ["SUNFLOWER", "SUN"]}
+    "RAPESEED": {
+        "label": "RSM",
+        "color": "#FFD400",
+        "enabled": True,
+        "aliases": ["RAPESEED", "RAPE"]
+    },
+    "SUNFLOWER": {
+        "label": "SFM",
+        "color": "#2E8B57",
+        "enabled": True,
+        "aliases": ["SUNFLOWER", "SUNFLOWERSEED", "SUN FLOWER", "SFM"]
+    },
+    "SOY": {
+        "label": "SOY",
+        "color": "#D62728",
+        "enabled": False,
+        "aliases": ["ANY SOYABEANMEAL FEED, DEHULLED"]
+    }
 }
 
-MIN_RADIUS, MAX_RADIUS = 7, 28
+# ==============================================================================
+# VISUALIZATION SETTINGS
+# ==============================================================================
+
+MIN_RADIUS = 7
+MAX_RADIUS = 22
 CAP_PERCENTILE = 0.95
 ROUTE_WEIGHT = 3
 
+SHOW_BASE_ICONS = True
+
+BASE_ICON_OFFSETS = {
+    "BASE_A": {"lat": 0.10, "lon": -0.12},
+    "BASE_B": {"lat": 0.10, "lon": 0.12}
+}
+
+PARTNER_COLUMN_CANDIDATES = [
+    "Sold-to party name", "Sold-to pt name", "Sold-to name", "Customer name",
+    "Customer", "Partner", "Partner name", "Name 1", "Sold-to party",
+    "Ship-to party name", "Sold-to party description", "Ship-to party description"
+]
+
+# ==============================================================================
+# CACHE MANAGEMENT
+# ==============================================================================
+
 def load_cache():
     if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "r", encoding="utf-8") as f: return json.load(f)
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
     return {}
 
 def save_cache(cache):
-    with open(CACHE_FILE, "w", encoding="utf-8") as f: json.dump(cache, f, ensure_ascii=False, indent=4)
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=4)
+
+# ==============================================================================
+# HELPER FUNCTIONS
+# ==============================================================================
 
 def parse_number(value):
     if pd.isna(value): return None
@@ -55,73 +109,166 @@ def parse_number(value):
     if "." in text and "," in text:
         if text.rfind(",") > text.rfind("."): text = text.replace(".", "").replace(",", ".")
         else: text = text.replace(",", "")
-    else: text = text.replace(",", ".")
+    else:
+        text = text.replace(",", ".")
     try: return float(text)
-    except: return None
+    except ValueError: return None
 
-def normalize_text(value): return "" if pd.isna(value) else str(value).strip().upper()
+def normalize_text(value):
+    if pd.isna(value): return ""
+    return str(value).strip().upper()
+
+def safe_html(value):
+    return escape(str(value))
+
+def format_qty(value):
+    if value is None or pd.isna(value): return "N/A"
+    return f"{value:,.0f} MT"
+
+def format_price(value):
+    if value is None or pd.isna(value): return "N/A"
+    return f"{value:,.2f} €/MT"
 
 def detect_base_key(base_text):
     text = normalize_text(base_text)
-    if "KEYWORD_A" in text: return "BASE_A" # Anonymized mapping logic
-    if "KEYWORD_B" in text: return "BASE_B"
+    if "KEYWORD_A" in text: return "BASE_A" # Anonymized logic
+    if "KEYWORD_B" in text: return "BASE_B" # Anonymized logic
     return None
 
 def detect_product_group(commodity_desc):
     text = normalize_text(commodity_desc)
     for product_key, config in PRODUCT_CONFIG.items():
-        if any(alias in text for alias in config["aliases"]): return product_key
+        for alias in config["aliases"]:
+            if alias.upper() in text: return product_key
     return None
 
-def format_qty(value): return "N/A" if value is None or pd.isna(value) else f"{value:,.0f} MT"
+def product_enabled(product_key):
+    return product_key in PRODUCT_CONFIG and PRODUCT_CONFIG[product_key].get("enabled", False)
+
+def product_label(product_key):
+    return PRODUCT_CONFIG[product_key]["label"]
+
+def product_color(product_key):
+    return PRODUCT_CONFIG[product_key]["color"]
+
+def weighted_average(group, value_col, weight_col):
+    valid = group[[value_col, weight_col]].copy()
+    valid[value_col] = pd.to_numeric(valid[value_col], errors="coerce")
+    valid[weight_col] = pd.to_numeric(valid[weight_col], errors="coerce")
+    valid = valid.dropna(subset=[value_col, weight_col])
+    valid = valid[valid[weight_col] > 0]
+    if valid.empty: return None
+    total_weight = valid[weight_col].sum()
+    if total_weight == 0: return None
+    return (valid[value_col] * valid[weight_col]).sum() / total_weight
 
 def get_scale_limits(values, cap_percentile=CAP_PERCENTILE):
     cleaned = [float(v) for v in values if v is not None and not pd.isna(v) and float(v) > 0]
     if not cleaned: return 0, 0
     min_q = min(cleaned)
     max_q = float(pd.Series(cleaned).quantile(cap_percentile))
-    return min_q, max(cleaned) if max_q <= min_q else max_q
+    if max_q <= min_q: max_q = max(cleaned)
+    return min_q, max_q
 
 def scale_radius(qty, min_q, max_q, min_r=MIN_RADIUS, max_r=MAX_RADIUS):
     if qty is None or pd.isna(qty) or qty <= 0: return min_r
     if max_q is None or min_q is None or pd.isna(max_q) or pd.isna(min_q) or max_q <= min_q: return (min_r + max_r) / 2
     capped_qty = min(float(qty), float(max_q))
-    sqrt_min, sqrt_max, sqrt_qty = math.sqrt(float(min_q)), math.sqrt(float(max_q)), math.sqrt(capped_qty)
-    if sqrt_max == sqrt_min: return (min_r + max_r) / 2
-    return min_r + (sqrt_qty - sqrt_min) * (max_r - min_r) / (sqrt_max - sqrt_min)
+    log_min, log_max, log_qty = math.log(float(min_q) + 1), math.log(float(max_q) + 1), math.log(capped_qty + 1)
+    if log_max == log_min: return (min_r + max_r) / 2
+    return min_r + (log_qty - log_min) * (max_r - min_r) / (log_max - log_min)
 
-def make_pie_slice_svg(radius, start_angle, end_angle, color):
-    radius = int(max(4, radius))
-    size = radius * 2 + 6
-    center, r = size / 2, radius
-    if end_angle - start_angle >= 359.99:
-        return f'<svg width="{size}" height="{size}" viewBox="0 0 {size} {size}" style="pointer-events:none; overflow:visible;"><circle cx="{center}" cy="{center}" r="{r}" fill="{color}" fill-opacity="0.82" stroke="#ffffff" stroke-width="1.2" style="pointer-events:auto;" /></svg>'
-    start_rad, end_rad = math.radians(start_angle - 90), math.radians(end_angle - 90)
-    x1, y1 = center + r * math.cos(start_rad), center + r * math.sin(start_rad)
-    x2, y2 = center + r * math.cos(end_rad), center + r * math.sin(end_rad)
-    large_arc = 1 if (end_angle - start_angle) > 180 else 0
-    path = f"M {center},{center} L {x1},{y1} A {r},{r} 0 {large_arc},1 {x2},{y2} Z"
-    return f'<svg width="{size}" height="{size}" viewBox="0 0 {size} {size}" style="pointer-events:none; overflow:visible;"><path d="{path}" fill="{color}" fill-opacity="0.82" stroke="#ffffff" stroke-width="1.2" style="pointer-events:auto;" /></svg>'
+def find_partner_column(df):
+    normalized_map = {str(c).strip().upper(): c for c in df.columns}
+    for candidate in PARTNER_COLUMN_CANDIDATES:
+        key = candidate.strip().upper()
+        if key in normalized_map: return normalized_map[key]
+    return None
 
-def add_pie_slice_marker(map_layer, location, radius, start_angle, end_angle, color, tooltip_html):
+def get_partner_text(group, fallback_value):
+    partner_col = group.attrs.get("partner_col")
+    if partner_col and partner_col in group.columns:
+        vals = []
+        for v in group[partner_col].dropna().astype(str).tolist():
+            clean = v.strip()
+            if clean and clean.upper() != "NAN" and clean not in vals: vals.append(clean)
+        if vals: return ", ".join(vals[:5])
+    fallback = str(fallback_value).strip()
+    if fallback and fallback.upper() != "NAN": return fallback
+    return "N/A"
+
+def html_tooltip(lines):
+    return "<div style='font-family: Arial; font-size: 12px; line-height: 1.35;'>" + "<br>".join(lines) + "</div>"
+
+def plain_from_html_lines(lines):
+    clean_lines = []
+    for line in lines:
+        clean = str(line).replace("<b>", "").replace("</b>", "").replace("<br>", "\n")
+        clean_lines.append(clean)
+    return "\n".join(clean_lines)
+
+# ==============================================================================
+# CUSTOM SVG PIE CHART MARKER
+# ==============================================================================
+
+def polar_to_cartesian(center, radius, angle_degrees):
+    angle_radians = math.radians(angle_degrees - 90)
+    return (center + radius * math.cos(angle_radians), center + radius * math.sin(angle_radians))
+
+def make_svg_pie(radius, slices, center_label=""):
     radius = int(max(4, radius))
-    size = radius * 2 + 6
-    svg = make_pie_slice_svg(radius, start_angle, end_angle, color)
-    icon = folium.DivIcon(html=f'<div style="width:{size}px; height:{size}px; pointer-events:none;">{svg}</div>', icon_size=(size, size), icon_anchor=(size / 2, size / 2))
-    folium.Marker(location=location, icon=icon, tooltip=folium.Tooltip(tooltip_html, sticky=True)).add_to(map_layer)
+    size = radius * 2 + 8
+    center = size / 2
+
+    if not slices: return ""
+    if len(slices) == 1:
+        s = slices[0]
+        color, title = product_color(s["product_key"]), safe_html(s["tooltip_plain"])
+        return f'<svg width="{size}" height="{size}" viewBox="0 0 {size} {size}" xmlns="http://www.w3.org/2000/svg" style="overflow:visible;"><circle cx="{center}" cy="{center}" r="{radius}" fill="{color}" fill-opacity="0.84" stroke="#ffffff" stroke-width="1.4"><title>{title}</title></circle></svg>'
+
+    svg_parts = [f'<svg width="{size}" height="{size}" viewBox="0 0 {size} {size}" xmlns="http://www.w3.org/2000/svg" style="overflow:visible;">']
+    start_angle = 0.0
+
+    for idx, s in enumerate(slices):
+        if s["total_qty"] <= 0 or s["qty"] <= 0: continue
+        slice_angle = (s["qty"] / s["total_qty"]) * 360.0
+        end_angle = 360.0 if idx == len(slices) - 1 else start_angle + slice_angle
+        x1, y1 = polar_to_cartesian(center, radius, start_angle)
+        x2, y2 = polar_to_cartesian(center, radius, end_angle)
+        large_arc = 1 if (end_angle - start_angle) > 180 else 0
+        path = f"M {center},{center} L {x1},{y1} A {radius},{radius} 0 {large_arc},1 {x2},{y2} Z"
+        color, title = product_color(s["product_key"]), safe_html(s["tooltip_plain"])
+        svg_parts.append(f'<path d="{path}" fill="{color}" fill-opacity="0.84" stroke="#ffffff" stroke-width="1.4"><title>{title}</title></path>')
+        start_angle = end_angle
+
+    svg_parts.append("</svg>")
+    return "".join(svg_parts)
+
+def add_svg_marker(layer, location, svg_html, radius):
+    radius = int(max(4, radius))
+    size = radius * 2 + 8
+    icon = folium.DivIcon(html=f'<div style="width:{size}px; height:{size}px;">{svg_html}</div>', icon_size=(size, size), icon_anchor=(size / 2, size / 2))
+    folium.Marker(location=location, icon=icon).add_to(layer)
+
+# ==============================================================================
+# GEOCODING RESOLUTION UI
+# ==============================================================================
 
 def geocode_with_ui(city_name):
-    geolocator = Nominatim(user_agent="agri_logistics_mapper")
+    """Fetches coordinates. If multiple results are found, prompts the user to select."""
+    geolocator = Nominatim(user_agent="logistics_mapper_portfolio")
     try: results = geolocator.geocode(city_name, exactly_one=False, limit=5)
-    except: results = None
+    except Exception as e: print(f"    [!] Search error ({city_name}): {e}"); results = None
 
-    if results and len(results) == 1: return results[0].latitude, results[0].longitude
+    if results and len(results) == 1:
+        print(f"    [+] {city_name} auto-resolved: {results[0].address}")
+        return results[0].latitude, results[0].longitude
 
     result_coords = {"lat": None, "lon": None, "resolved": False}
     current_options_data = []
 
     root = tk.Tk()
-    root.title("Geocoding Resolution Required")
+    root.title("Geocoding Resolution")
     root.attributes("-topmost", True)
     root.geometry("600x350")
     try: root.eval("tk::PlaceWindow . center")
@@ -149,16 +296,18 @@ def geocode_with_ui(city_name):
 
     update_dropdown(results)
     combo.pack(pady=5)
+
     tk.Label(frame, text="Or enter manually (Zip, City, Country):").pack(anchor=tk.W, pady=(15, 0))
     search_entry = tk.Entry(frame, width=50)
     search_entry.pack(pady=5)
 
     def on_search():
-        if search_entry.get().strip():
+        new_query = search_entry.get().strip()
+        if new_query:
             try:
-                new_res = geolocator.geocode(search_entry.get().strip(), exactly_one=False, limit=5)
+                new_res = geolocator.geocode(new_query, exactly_one=False, limit=5)
                 if new_res: update_dropdown(new_res)
-                else: messagebox.showinfo("No Results", "No locations found.")
+                else: messagebox.showinfo("No match", "Could not find location.")
             except: messagebox.showerror("Error", "Network error during search.")
 
     tk.Button(frame, text="Search Again", command=on_search).pack()
@@ -177,70 +326,171 @@ def geocode_with_ui(city_name):
     if result_coords["resolved"]: return result_coords["lat"], result_coords["lon"]
     return None, None
 
-def build_summary_panel(df_products):
-    summary_rows = []
-    for base_key in ["BASE_A", "BASE_B"]:
-        base_df = df_products[df_products["BaseKey"] == base_key]
-        for product_key in ["RAPESEED", "SUNFLOWER"]:
-            sub = base_df[base_df["ProductGroup"] == product_key]
-            if sub.empty: continue
-            total_qty = sub["Ctr/nom. Qty"].sum()
-            delivered_sub, fca_sub = sub[sub["Inco1"].isin(["CPT", "DAP", "DDP"])], sub[sub["Inco1"] == "FCA"]
-            summary_rows.append({
-                "base": base_key, "product_key": product_key, "product_label": PRODUCT_CONFIG[product_key]["label"],
-                "color": PRODUCT_CONFIG[product_key]["color"], "total_qty": total_qty,
-                "delivered_qty": delivered_sub["Ctr/nom. Qty"].sum() if not delivered_sub.empty else 0,
-                "fca_qty": fca_sub["Ctr/nom. Qty"].sum() if not fca_sub.empty else 0
-            })
+# ==============================================================================
+# TOOLTIP / TEXT BUILDERS
+# ==============================================================================
 
-    grand_total = sum(r["total_qty"] for r in summary_rows)
-    html = f"""<div id="summary-panel" style="position: fixed; left: 14px; bottom: 24px; width: 330px; max-height: 55vh; overflow-y: auto; background: white; padding: 10px 12px; border-radius: 12px; box-shadow: 0 4px 18px rgba(0,0,0,0.22); z-index: 9999; font-family: Arial, sans-serif; font-size: 12px;"><details><summary style="font-size:15px; font-weight:bold; cursor:pointer;">Logistics Summary</summary><div style="margin-top:10px; padding:8px; background:#f3f3f3; border-radius:8px;"><b>Total Sales:</b> {format_qty(grand_total)}</div>"""
-    
-    for base_key in ["BASE_A", "BASE_B"]:
-        html += f'<div style="margin-top: 12px; padding: 8px; border-radius: 8px; background: #f6f6f6; font-weight: bold; font-size: 14px;">{escape(base_key)}</div>'
-        base_rows = [r for r in summary_rows if r["base"] == base_key]
-        if not base_rows:
-            html += '<div style="padding:8px; color:#777;">No data available.</div>'
-            continue
-        for r in base_rows:
-            html += f'<div style="margin-top: 8px; padding: 8px; border-left: 6px solid {r["color"]}; background: #ffffff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.08);"><div style="font-weight:bold; font-size:13px;">{escape(r["product_label"])}</div><div>Total Qty: <b>{format_qty(r["total_qty"])}</b></div><div>Delivered Qty: {format_qty(r["delivered_qty"])}</div><div>FCA Qty: {format_qty(r["fca_qty"])}</div></div>'
-    html += "</details></div>"
-    return html
+def build_delivery_product_tooltip(city, base_key, product_key, product_qty, total_qty, product_data):
+    weighted_freight = weighted_average(product_data, "freight EUR", "Ctr/nom. Qty")
+    partner = get_partner_text(product_data, city)
+    lines = [
+        f"<b>Partner:</b> {safe_html(partner)}",
+        f"<b>Destination:</b> {safe_html(city)}",
+        f"<b>Product:</b> {safe_html(product_label(product_key))}",
+        f"<b>Total quantity:</b> {format_qty(product_qty)}",
+        f"<b>Freight:</b> {format_price(weighted_freight)}"
+    ]
+    return html_tooltip(lines), plain_from_html_lines(lines)
+
+def build_fca_product_tooltip(base_key, product_key, product_qty, total_qty, product_data):
+    weighted_freight = weighted_average(product_data, "freight EUR", "Ctr/nom. Qty")
+    partner = get_partner_text(product_data, "N/A")
+    lines = [
+        f"<b>Partner:</b> {safe_html(partner)}",
+        f"<b>Destination:</b> FCA {safe_html(base_key)}",
+        f"<b>Product:</b> {safe_html(product_label(product_key))}",
+        f"<b>Total quantity:</b> {format_qty(product_qty)}",
+        f"<b>Freight:</b> {format_price(weighted_freight)}"
+    ]
+    return html_tooltip(lines), plain_from_html_lines(lines)
+
+# ==============================================================================
+# JAVASCRIPT INJECTION FOR MUTUALLY EXCLUSIVE LAYERS
+# ==============================================================================
+
+def add_mutually_exclusive_layer_script(m, all_layer, product_layers):
+    map_name = m.get_name()
+    all_layer_var = all_layer.get_name()
+
+    only_layer_items = [{"label": f"{PRODUCT_CONFIG[pk]['label']} only", "var_name": l.get_name()} for pk, l in product_layers.items()]
+    only_layers_js = ",\n            ".join([f'{{ label: "{i["label"]}", layer: {i["var_name"]} }}' for i in only_layer_items])
+
+    script = f"""
+    setTimeout(function() {{
+        var map = {map_name};
+        var allLayer = {all_layer_var};
+        var onlyLayers = [{only_layers_js}];
+
+        function normalizeText(text) {{ return (text || '').replace(/\\s+/g, ' ').trim(); }}
+
+        function getOverlayRows() {{
+            var rows = [];
+            var labels = document.querySelectorAll('.leaflet-control-layers-overlays label');
+            labels.forEach(function(label) {{
+                var input = label.querySelector("input[type='checkbox']");
+                var text = normalizeText(label.textContent);
+                if (input) rows.push({{labelElement: label, inputElement: input, text: text}});
+            }});
+            return rows;
+        }}
+
+        function setCheckbox(labelText, checked) {{
+            getOverlayRows().forEach(function(row) {{ if (row.text === labelText) row.inputElement.checked = checked; }});
+        }}
+
+        function syncCheckboxesAll() {{
+            setCheckbox('All Sales Mix', true);
+            onlyLayers.forEach(function(item) {{ setCheckbox(item.label, false); }});
+        }}
+
+        function syncCheckboxesOnly(activeLabel) {{
+            setCheckbox('All Sales Mix', false);
+            onlyLayers.forEach(function(item) {{ setCheckbox(item.label, item.label === activeLabel); }});
+        }}
+
+        function removeLayerIfVisible(layer) {{ if (map.hasLayer(layer)) map.removeLayer(layer); }}
+        function addLayerIfHidden(layer) {{ if (!map.hasLayer(layer)) map.addLayer(layer); }}
+
+        function activateAll() {{
+            onlyLayers.forEach(function(item) {{ removeLayerIfVisible(item.layer); }});
+            addLayerIfHidden(allLayer);
+            syncCheckboxesAll();
+        }}
+
+        function activateOnly(activeItem) {{
+            removeLayerIfVisible(allLayer);
+            onlyLayers.forEach(function(item) {{ if (item.label !== activeItem.label) removeLayerIfVisible(item.layer); }});
+            addLayerIfHidden(activeItem.layer);
+            syncCheckboxesOnly(activeItem.label);
+        }}
+
+        function wireCheckboxes() {{
+            getOverlayRows().forEach(function(row) {{
+                if (row.text === 'All Sales Mix') {{
+                    row.inputElement.addEventListener('click', function(e) {{ e.preventDefault(); e.stopPropagation(); activateAll(); return false; }}, true);
+                }}
+                onlyLayers.forEach(function(item) {{
+                    if (row.text === item.label) {{
+                        row.inputElement.addEventListener('click', function(e) {{ e.preventDefault(); e.stopPropagation(); activateOnly(item); return false; }}, true);
+                    }}
+                }});
+            }});
+        }}
+        wireCheckboxes();
+        activateAll();
+    }}, 1000);
+    """
+    m.get_root().script.add_child(folium.Element(script))
+
+# ==============================================================================
+# MAIN MAP GENERATION
+# ==============================================================================
 
 def generate_map(excel_path):
-    print("\n--- Map Generation Started ---")
+    print("\n--- Generating Map... ---")
     try:
         temp_file = os.path.join(tempfile.gettempdir(), "temp_map_read.xlsx")
         try: shutil.copy2(excel_path, temp_file)
-        except: return
+        except Exception as e: print(f"[ERROR] Copy failed: {e}"); return
+        
         df = pd.read_excel(temp_file, sheet_name=0)
         try: os.remove(temp_file)
         except: pass
 
         required_cols = ["Base loc name", "Inco1", "Inco2", "Ctr/nom. Qty", "freight EUR", "Commodity desc"]
-        if not all(col in df.columns for col in required_cols): return
+        for col in required_cols:
+            if col not in df.columns:
+                print(f"[ERROR] Missing column '{col}'. Map cannot be generated.")
+                return
+
+        partner_col = find_partner_column(df)
 
         df["Base loc name"], df["Inco1"], df["Inco2"], df["Commodity desc"] = df["Base loc name"].apply(normalize_text), df["Inco1"].apply(normalize_text), df["Inco2"].apply(normalize_text), df["Commodity desc"].apply(normalize_text)
         df["Ctr/nom. Qty"], df["freight EUR"] = df["Ctr/nom. Qty"].apply(parse_number), df["freight EUR"].apply(parse_number)
+        
         df = df.dropna(subset=["Base loc name", "Ctr/nom. Qty"])
         df = df[df["Ctr/nom. Qty"] > 0]
         df["BaseKey"], df["ProductGroup"] = df["Base loc name"].apply(detect_base_key), df["Commodity desc"].apply(detect_product_group)
-        
-        df_products = df[df["ProductGroup"].notna() & df["BaseKey"].notna()].copy()
-        if df_products.empty: return
+
+        df_products = df[df["ProductGroup"].notna() & df["ProductGroup"].apply(product_enabled) & df["BaseKey"].notna()].copy()
+        df_products.attrs["partner_col"] = partner_col
+
+        if df_products.empty:
+            print("[INFO] No valid product data found.")
+            return
 
         cache = load_cache()
         m = folium.Map(location=[48.0, 14.0], zoom_start=5, tiles="CartoDB positron")
-        base_layer, route_layer = folium.FeatureGroup(name="Bases", show=True), folium.FeatureGroup(name="Routes", show=True)
-        product_layers = {pk: folium.FeatureGroup(name=c["label"], show=True) for pk, c in PRODUCT_CONFIG.items() if c["enabled"] and pk in df_products["ProductGroup"].values}
 
-        for base_name, base_coords in BASES.items():
-            folium.Marker(location=[base_coords["lat"], base_coords["lon"]], popup=f"Base: {base_name}", icon=folium.Icon(color="darkblue", icon="industry", prefix="fa")).add_to(base_layer)
+        base_layer = folium.FeatureGroup(name="Bases", show=True)
+        all_sales_layer = folium.FeatureGroup(name="All Sales Mix", show=True)
+        product_layers = {pk: folium.FeatureGroup(name=f"{config['label']} only", show=False) for pk, config in PRODUCT_CONFIG.items() if config["enabled"] and pk in df_products["ProductGroup"].values}
 
         delivered_data = df_products[df_products["Inco1"].isin(["CPT", "DDP", "DAP"]) & (df_products["Inco2"] != "NAN") & (df_products["Inco2"] != "")].copy()
+        delivered_data.attrs["partner_col"] = partner_col
         destinations = delivered_data.groupby(["Inco2", "BaseKey"]).agg({"Ctr/nom. Qty": "sum"}).reset_index()
+
         fca_data_all = df_products[df_products["Inco1"] == "FCA"].copy()
+        fca_data_all.attrs["partner_col"] = partner_col
         fca_totals = fca_data_all.groupby(["BaseKey"]).agg({"Ctr/nom. Qty": "sum"}).reset_index()
+
+        if SHOW_BASE_ICONS:
+            for base_name, base_coords in BASES.items():
+                has_fca = not fca_totals.empty and not fca_totals[fca_totals["BaseKey"] == base_name].empty and fca_totals[fca_totals["BaseKey"] == base_name]["Ctr/nom. Qty"].iloc[0] > 0
+                offset = BASE_ICON_OFFSETS.get(base_name, {"lat": 0, "lon": 0}) if has_fca else {"lat": 0, "lon": 0}
+                icon_location = [base_coords["lat"] + offset["lat"], base_coords["lon"] + offset["lon"]]
+                if has_fca: folium.PolyLine(locations=[[base_coords["lat"], base_coords["lon"]], icon_location], color="#1f4e79", weight=1, opacity=0.45, dash_array="4,4").add_to(base_layer)
+                folium.Marker(location=icon_location, popup=f"Facility: {base_name}", tooltip=f"Facility: {base_name}", icon=folium.Icon(color="darkblue", icon="industry", prefix="fa")).add_to(base_layer)
 
         scale_values = (destinations["Ctr/nom. Qty"].tolist() if not destinations.empty else []) + (fca_totals["Ctr/nom. Qty"].tolist() if not fca_totals.empty else [])
         min_q, max_q = get_scale_limits(scale_values)
@@ -256,57 +506,71 @@ def generate_map(excel_path):
                 else: continue
             dest_coords = cache[city]
 
-            folium.PolyLine(locations=[[start_coords["lat"], start_coords["lon"]], [dest_coords["lat"], dest_coords["lon"]]], color="#808080", weight=ROUTE_WEIGHT, opacity=0.60, tooltip=f"{base_key} → {city} | Total: {format_qty(total_qty)}").add_to(route_layer)
+            city_base_data = delivered_data[(delivered_data["Inco2"] == city) & (delivered_data["BaseKey"] == base_key)].copy()
+            city_base_data.attrs["partner_col"] = partner_col
             
-            city_base_data = delivered_data[(delivered_data["Inco2"] == city) & (delivered_data["BaseKey"] == base_key)]
-            product_split = city_base_data.groupby("ProductGroup").agg({"Ctr/nom. Qty": "sum"}).reset_index()
-            radius, start_angle = scale_radius(total_qty, min_q, max_q), 0
+            slices = []
+            for _, p_row in city_base_data.groupby("ProductGroup").agg({"Ctr/nom. Qty": "sum"}).reset_index().iterrows():
+                if p_row["ProductGroup"] not in product_layers: continue
+                p_data = city_base_data[city_base_data["ProductGroup"] == p_row["ProductGroup"]].copy()
+                p_data.attrs["partner_col"] = partner_col
+                _, tooltip_plain = build_delivery_product_tooltip(city, base_key, p_row["ProductGroup"], p_row["Ctr/nom. Qty"], total_qty, p_data)
+                slices.append({"product_key": p_row["ProductGroup"], "qty": p_row["Ctr/nom. Qty"], "total_qty": total_qty, "tooltip_plain": tooltip_plain})
 
-            for _, p_row in product_split.iterrows():
-                product_key, product_qty = p_row["ProductGroup"], p_row["Ctr/nom. Qty"]
-                if product_key not in product_layers: continue
-                end_angle = start_angle + (product_qty / total_qty) * 360
-                
-                comm_text = "<br>".join([f"- {safe_html(k)}: {format_qty(v)}" for k, v in city_base_data[city_base_data["ProductGroup"] == product_key].groupby("Commodity desc")["Ctr/nom. Qty"].sum().items()])
-                tooltip_html = f'<div style="font-family: Arial; font-size: 12px;"><b>Destination:</b> {safe_html(city)}<br><b>Product:</b> {safe_html(PRODUCT_CONFIG[product_key]["label"])}<br><b>Qty:</b> {format_qty(product_qty)}<hr style="margin: 3px 0;">{comm_text}</div>'
-                
-                add_pie_slice_marker(product_layers[product_key], [dest_coords["lat"], dest_coords["lon"]], radius, start_angle, end_angle, PRODUCT_CONFIG[product_key]["color"], tooltip_html)
-                start_angle = end_angle
+            if slices:
+                folium.PolyLine(locations=[[start_coords["lat"], start_coords["lon"]], [dest_coords["lat"], dest_coords["lon"]]], color="#808080", weight=ROUTE_WEIGHT, opacity=0.60, tooltip=f"{base_key} → {city} | Total: {format_qty(total_qty)}").add_to(all_sales_layer)
+                add_svg_marker(all_sales_layer, [dest_coords["lat"], dest_coords["lon"]], make_svg_pie(scale_radius(total_qty, min_q, max_q), slices, f"{city} | Total: {format_qty(total_qty)}"), scale_radius(total_qty, min_q, max_q))
+
+            for _, p_row in city_base_data.groupby("ProductGroup").agg({"Ctr/nom. Qty": "sum"}).reset_index().iterrows():
+                pk = p_row["ProductGroup"]
+                if pk not in product_layers: continue
+                p_data = city_base_data[city_base_data["ProductGroup"] == pk].copy()
+                p_data.attrs["partner_col"] = partner_col
+                tooltip_html, _ = build_delivery_product_tooltip(city, base_key, pk, p_row["Ctr/nom. Qty"], total_qty, p_data)
+                folium.PolyLine(locations=[[start_coords["lat"], start_coords["lon"]], [dest_coords["lat"], dest_coords["lon"]]], color=product_color(pk), weight=ROUTE_WEIGHT, opacity=0.55, tooltip=f"{product_label(pk)} | {base_key} → {city} | {format_qty(p_row['Ctr/nom. Qty'])}").add_to(product_layers[pk])
+                folium.CircleMarker(location=[dest_coords["lat"], dest_coords["lon"]], radius=scale_radius(p_row["Ctr/nom. Qty"], min_q, max_q), color="#ffffff", weight=1.2, fill=True, fill_color=product_color(pk), fill_opacity=0.82, tooltip=folium.Tooltip(tooltip_html, sticky=True)).add_to(product_layers[pk])
 
         for base_name, base_coords in BASES.items():
             fca_data = fca_data_all[fca_data_all["BaseKey"] == base_name].copy()
-            if fca_data.empty: continue
-            total_fca_qty = fca_data["Ctr/nom. Qty"].sum()
-            if total_fca_qty <= 0: continue
+            fca_data.attrs["partner_col"] = partner_col
+            if fca_data.empty or fca_data["Ctr/nom. Qty"].sum() <= 0: continue
             
-            radius, start_angle = scale_radius(total_fca_qty, min_q, max_q), 0
+            total_fca_qty = fca_data["Ctr/nom. Qty"].sum()
+            slices = []
             for _, p_row in fca_data.groupby("ProductGroup").agg({"Ctr/nom. Qty": "sum"}).reset_index().iterrows():
-                product_key, product_qty = p_row["ProductGroup"], p_row["Ctr/nom. Qty"]
-                if product_key not in product_layers: continue
-                end_angle = start_angle + (product_qty / total_fca_qty) * 360
-                
-                customer_text = "<br>".join([f"- {safe_html(c if c and c!='NAN' else 'N/A')} | {safe_html(comm)}: {format_qty(q)}" for (c, comm), q in fca_data[fca_data["ProductGroup"] == product_key].groupby(["Inco2", "Commodity desc"])["Ctr/nom. Qty"].sum().items()])
-                tooltip_html = f'<div style="font-family: Arial; font-size: 12px;"><b>FCA Base:</b> {safe_html(base_name)}<br><b>Product:</b> {safe_html(PRODUCT_CONFIG[product_key]["label"])}<br><b>Qty:</b> {format_qty(product_qty)}<hr style="margin: 3px 0;">{customer_text}</div>'
-                
-                add_pie_slice_marker(product_layers[product_key], [base_coords["lat"], base_coords["lon"]], radius, start_angle, end_angle, PRODUCT_CONFIG[product_key]["color"], tooltip_html)
-                start_angle = end_angle
+                if p_row["ProductGroup"] not in product_layers: continue
+                p_data = fca_data[fca_data["ProductGroup"] == p_row["ProductGroup"]].copy()
+                p_data.attrs["partner_col"] = partner_col
+                _, tooltip_plain = build_fca_product_tooltip(base_name, p_row["ProductGroup"], p_row["Ctr/nom. Qty"], total_fca_qty, p_data)
+                slices.append({"product_key": p_row["ProductGroup"], "qty": p_row["Ctr/nom. Qty"], "total_qty": total_fca_qty, "tooltip_plain": tooltip_plain})
 
-        m.get_root().html.add_child(folium.Element(build_summary_panel(df_products)))
-        base_layer.add_to(m); route_layer.add_to(m)
+            if slices: add_svg_marker(all_sales_layer, [base_coords["lat"], base_coords["lon"]], make_svg_pie(scale_radius(total_fca_qty, min_q, max_q), slices, f"FCA {base_name} | Total: {format_qty(total_fca_qty)}"), scale_radius(total_fca_qty, min_q, max_q))
+
+            for _, p_row in fca_data.groupby("ProductGroup").agg({"Ctr/nom. Qty": "sum"}).reset_index().iterrows():
+                pk = p_row["ProductGroup"]
+                if pk not in product_layers: continue
+                p_data = fca_data[fca_data["ProductGroup"] == pk].copy()
+                p_data.attrs["partner_col"] = partner_col
+                tooltip_html, _ = build_fca_product_tooltip(base_name, pk, p_row["Ctr/nom. Qty"], total_fca_qty, p_data)
+                folium.CircleMarker(location=[base_coords["lat"], base_coords["lon"]], radius=scale_radius(p_row["Ctr/nom. Qty"], min_q, max_q), color="#ffffff", weight=1.2, fill=True, fill_color=product_color(pk), fill_opacity=0.82, tooltip=folium.Tooltip(tooltip_html, sticky=True)).add_to(product_layers[pk])
+
+        if SHOW_BASE_ICONS: base_layer.add_to(m)
+        all_sales_layer.add_to(m)
         for _, layer in product_layers.items(): layer.add_to(m)
         folium.LayerControl(collapsed=False, position="topright").add_to(m)
+        add_mutually_exclusive_layer_script(m, all_sales_layer, product_layers)
 
         map_filename = os.path.join(os.path.dirname(excel_path), "Logistics_Map.html")
         m.save(map_filename)
         save_cache(cache)
-        print(f"--- Map generated successfully: {map_filename} ---")
+        print(f"--- Map generated: {map_filename} ---")
         webbrowser.open(map_filename)
-
-    except Exception as e: print(f"Map generation error: {e}")
+    except Exception as e: print(f"Map Error: {e}")
 
 if __name__ == "__main__":
     root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
-    initial_dir = os.path.expanduser(r"~\Documents")
-    selected_file = filedialog.askopenfilename(title="Select Report for Mapping", initialdir=initial_dir, filetypes=[("Excel files", "*.xlsx;*.xls")])
+    initial_dir = os.path.expanduser(r"~\Documents\Logistics_Reports") # Anonymized path
+    if not os.path.exists(initial_dir): initial_dir = os.path.expanduser("~")
+    selected_file = filedialog.askopenfilename(title="Select Excel File for Map", initialdir=initial_dir, filetypes=[("Excel files", "*.xlsx;*.xls")])
     root.destroy()
     if selected_file: generate_map(selected_file)
