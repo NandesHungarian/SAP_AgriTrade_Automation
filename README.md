@@ -1,162 +1,61 @@
-# SAP AgriTrade Automation
+# SAP Sales Report and Logistics Map
 
-> All company-specific data (T-codes, user IDs, file paths, partner names, locations) has been anonymized for public sharing. Part of my [Automation Portfolio](https://github.com/NandesHungarian/Automation-Portfolio).
+Every morning the sales report had to be pulled from SAP, converted to EUR with the day's exchange rates and formatted for management. This took 45 to 60 minutes. This project does it in a single run, and at the end it can draw an interactive map showing where the goods are going.
 
----
-
-## Overview
-
-A Python-based end-to-end automation system for **daily and weekly sales reporting in agricultural commodity trading**, built around SAP ERP integration. The system replaces a manual 45–60 minute reporting workflow with a single script execution.
-
-**Domain:** Agricultural commodity trading (grains, oilseeds) — sales and logistics operations
-**SAP modules involved:** SD (Sales & Distribution), custom reporting transactions
-**Environment:** Windows · SAP GUI with Scripting API · Microsoft Excel · Outlook
-
-### Output preview
+Part of my [Automation Portfolio](https://github.com/NandesHungarian/Automation-Portfolio). All company-specific data (transaction codes, user IDs, folders, partner names) has been anonymized. The screenshots below were made with test data.
 
 ![Interactive logistics map](images/logistics_map.jpg)
-*Interactive HTML logistics map: loading bases, delivery routes sized by quantity, product layers and hover details.*
 
 ![Weekly summary table](images/weekly_summary.jpg)
-*Summary table appended to the weekly report: quantity and weighted average net EUR price by base, commodity and crop year.*
-
-*Sample output generated from test data.*
 
 ---
 
-## System Architecture
+## How it works
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                 sap_sales_automation.py                 │
-│                                                         │
-│  1. SAP Login ──► 2. Run Transaction ──► 3. Export XLS  │
-│                                                         │
-│  4. Excel Processing:                                   │
-│     ├─ Delete internal/purchase rows                    │
-│     ├─ Load daily FX rate files (EUR/HUF, USD/HUF)      │
-│     ├─ Detect missing freight → Tkinter popup           │
-│     ├─ Calculate: Flat EUR, Freight EUR, Net Flat EUR   │
-│     ├─ Reorder columns to fixed management layout       │
-│     ├─ Apply conditional formatting (anomaly detection) │
-│     └─ Draw pivot summary table (by location/commodity) │
-│                                                         │
-│  5. Save .xlsx ──► 6. Optional: Generate HTML map       │
-└─────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────────────────┐
-│                     map_generator.py                    │
-│                                                         │
-│  Reads processed .xlsx ──► Extracts shipment locations  │
-│  ──► Folium/Leaflet map ──► Self-contained .html output │
-└─────────────────────────────────────────────────────────┘
-```
+**1. Getting the data out of SAP** (`sap_sales_automation.py`)
 
----
+The script starts SAP Logon if it is not running, logs in through the SAP GUI Scripting API and runs the sales report transaction. On Mondays it pulls the whole previous week, on other days only the previous day. It exports the result to Excel and picks up the new workbook automatically.
 
-## Scripts
+**2. Preparing the report**
 
-### `sap_sales_automation.py`
+- Removes purchase rows and keeps only the sales team's own contracts
+- Converts HUF and USD prices and freight costs to EUR. The exchange rates come from the daily rate files, matched to each contract's date
+- If a delivered contract (not FCA) has no freight cost, a small window asks for it. The answer is remembered for the other lines of the same contract
+- Finds columns by their header name, so a changed SAP layout does not break it
+- Marks suspicious rows in red, for example internal partners or a HUF price that is clearly too low
+- Adds a summary table at the bottom: quantity and weighted average net EUR price by base, product and crop year. The weekly report gets a second table with Friday's sales only
+- Writes every skipped row and failed run with the reason to `sap_automation.log`, so nothing fails silently
 
-The core automation script. Handles the full pipeline from SAP login to finished management report.
+**3. The map** (`map_generator.py`)
 
-**Key features:**
+After the report is saved, the script offers to build the map. It reads the finished report and creates a single HTML file that opens in any browser.
 
-| Feature | Detail |
-|---------|--------|
-| SAP GUI Scripting | Automates login, transaction navigation, and ALV report export via `win32com` |
-| Smart date logic | Runs daily report on weekdays, weekly report on Mondays automatically |
-| FX rate lookup | Loads daily EUR/HUF and USD/HUF rate files, matches by closest prior date |
-| Freight detection | Flags non-FCA contracts with missing freight costs, prompts user via Tkinter GUI, caches per contract base number |
-| Column normalization | Maps columns by header name (not fixed index) — robust against SAP layout changes |
-| Anomaly detection | Marks rows red: HUF prices below threshold, internal partners, missing freight on DDP/CPT contracts |
-| Summary table | Draws a pivot-style table at the bottom of the sheet: quantity and weighted avg net price by location, commodity, and crop year |
-| Map integration | After saving the report, optionally launches `map_generator.py` |
-| Error logging | Skipped rows and failed runs are logged with the reason to `~/sap_automation.log` and the console, so nothing fails silently |
-
-**SAP interaction flow:**
-1. Checks if SAP GUI is already running; launches `saplogon.exe` if not
-2. Connects to the configured ERP system via `win32com.client.GetObject("SAPGUI")`
-3. Enters credentials from `~/sap_config.txt`
-4. Navigates to the custom sales transaction via T-code
-5. Sets plant entity, date range, and executes
-6. Exports via ALV toolbar → Excel → catches the new workbook
-
-**Currency conversion logic:**
-- `Flat Price` in HUF → divide by EUR/HUF rate for that doc date
-- `Flat Price` in USD → multiply by USD/HUF, then divide by EUR/HUF
-- Freight costs follow the same logic per their own currency column
-- `Net Flat EUR = Flat EUR − Freight EUR`
-- FX rates are loaded from daily price indication Excel files stored in a shared folder
-
----
-
-### `map_generator.py`
-
-Standalone interactive HTML logistics map generator.
-
-**Key features:**
-- Reads the finished management report `.xlsx`
-- Geocodes destination cities via OpenStreetMap Nominatim (`geopy`, no API key required) and caches results locally in `city_coordinates.json`
-- Ambiguous or unknown city names trigger a Tkinter picker instead of silently failing
-- Plots shipment markers on a Folium/Leaflet.js map
-- Color-codes by commodity type (e.g. rapeseed vs. sunflower)
-- Adds popup info per marker: partner, quantity, net price, IncoTerm
-- Exports a fully self-contained `.html` file — no server, no dependencies
-
----
-
-## Tech Stack
-
-| Tool | Purpose |
-|------|---------|
-| `win32com.client` | SAP GUI Scripting API, Excel COM automation |
-| `tkinter` + `ttk` | Freight input popup GUI |
-| `openpyxl` | Excel cell-level formatting, formula writing |
-| `pandas` | Data loading and analysis in `map_generator.py` |
-| `geopy` | City geocoding (OpenStreetMap Nominatim) with local cache |
-| `folium` | Interactive Leaflet.js map generation |
-| `datetime`, `glob`, `shutil` | File handling, date logic, temp file cleanup |
+- Lines from the loading bases to the delivery cities, sized by quantity and colored by product
+- FCA volumes shown at the base itself
+- Hovering over a point shows the partner, destination, product, quantity and freight
+- Products can be switched on and off
+- City coordinates come from OpenStreetMap and are saved locally, so each city is looked up only once. If a city name is unclear, a small window asks which one is meant
 
 ---
 
 ## Setup
 
+Needs Windows, Microsoft Excel and SAP GUI with scripting enabled (SAP Logon, Options, Scripting).
+
 ```bash
 pip install -r requirements.txt
 ```
 
-On first run, `sap_sales_automation.py` creates `~/sap_config.txt`:
+On the first run the script asks for the SAP username and password once and stores them in **Windows Credential Manager**. The password is never written to a file. To enter a new password, run:
 
-```
-USERNAME=Your_SAP_Username
-PASSWORD=Your_SAP_Password
+```bash
+python sap_sales_automation.py --reset-login
 ```
 
-Fill in your credentials and re-run. Edit the anonymized configuration block at the top of the script (`SAP_CFG_*`, paths) to match your system. SAP GUI must be installed with the Scripting API enabled (SAP Logon → Options → Scripting → Enable scripting).
+Set the folders and SAP settings in the configuration block at the top of `sap_sales_automation.py`.
 
 ---
 
-## Security Notes
+## Built with
 
-- Credentials are stored in a local plaintext file — **never committed to git** (`.gitignore` covers this)
-- All T-codes, plant codes, partner names, and file paths in the public version are anonymized
-
----
-
-## Output
-
-**Daily report (`daily_report_YYYY-MM-DD.xlsx`):**
-- Filtered to active sales team members
-- Columns reordered to fixed management layout
-- EUR net prices calculated
-- Anomaly rows highlighted in red
-- Daily summary table appended
-
-**Weekly report (`weekly_report_YYYY-MM-DD.xlsx`):**
-- Same as daily, plus a separate Friday-only sales breakdown table
-
-**Optional: `logistics_map_YYYY-MM-DD.html`**
-- Interactive map with all active shipment locations
-- Opens directly in any browser
+Python · `pywin32` (SAP and Excel automation) · `pandas` · `openpyxl` · `folium` (map) · `geopy` (city lookup) · `keyring` (password storage) · `tkinter` (input windows)

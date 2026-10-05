@@ -13,8 +13,9 @@ have been anonymized for public sharing.
 
 import win32com.client, sys, time, os, subprocess, datetime, glob, shutil, tempfile
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 import logging
+import keyring
 
 # Log to file AND console: if a row fails in production, there is a trace of it
 logging.basicConfig(
@@ -50,21 +51,29 @@ FINAL_COLUMN_ORDER = ["MC num", "Doc-date", "Ship start", "Ctr/nom. Qty", "Flat 
 LIST_VALID_USERS = ["USER01", "USER02", "USER03", "USER04", "USER05", "USER06", "USER07"]
 LIST_IGNORE_PARTNERS = ["INTERNAL_COMPANY_A", "INTERNAL_COMPANY_B"]
 
+# SAP login is kept in Windows Credential Manager, not in a file.
+# It is asked once on the first run. Start the script with --reset-login to enter it again.
+KEYRING_SERVICE = "SAP_AgriTrade_Automation"
+
 def get_credentials():
-    config_file = os.path.join(os.path.expanduser("~"), "sap_config.txt")
-    if not os.path.exists(config_file):
-        with open(config_file, "w", encoding="utf-8") as f:
-            f.write("USERNAME=Your_SAP_Username\nPASSWORD=Your_SAP_Password\n")
-        print(f"\n[!] INFO: Created config template at: {config_file}\nPlease fill it and restart.\n")
+    if "--reset-login" in sys.argv:
+        old_user = keyring.get_password(KEYRING_SERVICE, "username")
+        for key in ("username", old_user):
+            try: keyring.delete_password(KEYRING_SERVICE, key)
+            except Exception: pass
+    user = keyring.get_password(KEYRING_SERVICE, "username")
+    pwd = keyring.get_password(KEYRING_SERVICE, user) if user else None
+    if user and pwd: return user, pwd
+
+    root = tk.Tk(); root.withdraw(); root.attributes('-topmost', True)
+    user = simpledialog.askstring("SAP login", "SAP username:", parent=root)
+    pwd = simpledialog.askstring("SAP login", "SAP password:", show="*", parent=root) if user else None
+    root.destroy()
+    if not user or not pwd:
+        logging.error("No SAP login given, stopping.")
         sys.exit()
-    user, pwd = "", ""
-    with open(config_file, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip().startswith("USERNAME="): user = line.strip().split("=", 1)[1]
-            elif line.strip().startswith("PASSWORD="): pwd = line.strip().split("=", 1)[1]
-    if not user or user == "Your_SAP_Username" or not pwd or pwd == "Your_SAP_Password":
-        print(f"\n[!] ERROR: Please update credentials in {config_file}")
-        sys.exit()
+    keyring.set_password(KEYRING_SERVICE, "username", user)
+    keyring.set_password(KEYRING_SERVICE, user, pwd)
     return user, pwd
 
 MY_SAP_USER, MY_SAP_PASSWORD = get_credentials()
