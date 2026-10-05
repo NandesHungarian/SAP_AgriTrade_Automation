@@ -14,6 +14,17 @@ have been anonymized for public sharing.
 import win32com.client, sys, time, os, subprocess, datetime, glob, shutil, tempfile
 import tkinter as tk
 from tkinter import ttk, messagebox
+import logging
+
+# Log to file AND console: if a row fails in production, there is a trace of it
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(os.path.join(os.path.expanduser("~"), "sap_automation.log"), encoding="utf-8"),
+        logging.StreamHandler()
+    ]
+)
 
 TEST_FORCE_MISSING_FREIGHT = False
 
@@ -377,7 +388,9 @@ def process_excel_modifications(xl_app, wb_report, filename_name):
                     if "weekly" in filename_name.lower() and doc_date and doc_date.weekday() == 4:
                         if stat_key not in stats_friday: stats_friday[stat_key] = [0.0, 0.0]
                         stats_friday[stat_key][0] += float(qty or 0); stats_friday[stat_key][1] += float(qty or 0) * float(net_eur or 0)
-        except Exception: continue 
+        except Exception as row_err:
+            logging.warning(f"Row {i} skipped due to error: {row_err}")
+            continue
 
     try: reorder_columns_absolute(ws)
     except: pass
@@ -480,7 +493,9 @@ def sap_login_and_run():
                 except Exception as e: print(f"[WARNING] Map gen failed: {e}")
             
             root_map.destroy()
-        except: continue 
+        except Exception as run_err:
+            logging.error(f"Run failed for config {config.get('filename', '?')}: {run_err}")
+            continue
 
 if __name__ == "__main__":
     sap_login_and_run()

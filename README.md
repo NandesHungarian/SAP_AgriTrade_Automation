@@ -73,6 +73,7 @@ The core automation script. Handles the full pipeline from SAP login to finished
 | Anomaly detection | Marks rows red: HUF prices below threshold, internal partners, missing freight on DDP/CPT contracts |
 | Summary table | Draws a pivot-style table at the bottom of the sheet: quantity and weighted avg net price by location, commodity, and crop year |
 | Map integration | After saving the report, optionally launches `map_generator.py` |
+| Error logging | Skipped rows and failed runs are logged with the reason to `~/sap_automation.log` and the console, so nothing fails silently |
 
 **SAP interaction flow:**
 1. Checks if SAP GUI is already running; launches `saplogon.exe` if not

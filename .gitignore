@@ -2,4 +2,4 @@ sap_config.txt
 city_coordinates.json
 __pycache__/
 *.xlsx
-*.html
+*.html*.log
