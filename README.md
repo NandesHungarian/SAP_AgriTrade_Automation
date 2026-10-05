@@ -12,6 +12,16 @@ A Python-based end-to-end automation system for **daily and weekly sales reporti
 **SAP modules involved:** SD (Sales & Distribution), custom reporting transactions
 **Environment:** Windows · SAP GUI with Scripting API · Microsoft Excel · Outlook
 
+### Output preview
+
+![Interactive logistics map](docs/images/logistics_map.jpg)
+*Interactive HTML logistics map: loading bases, delivery routes sized by quantity, product layers and hover details.*
+
+![Weekly summary table](docs/images/weekly_summary.jpg)
+*Summary table appended to the weekly report: quantity and weighted average net EUR price by base, commodity and crop year.*
+
+*Sample output generated from test data.*
+
 ---
 
 ## System Architecture
