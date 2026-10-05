@@ -438,7 +438,9 @@ def sap_login_and_run():
 
             # Note: Layout selection relies on SAP default user settings for security compliance.
             
-            existing_wbs = [wb.Name for wb in win32com.client.GetActiveObject("Excel.Application").Workbooks] if (win32com.client.GetActiveObject("Excel.Application") rescue False) else []
+            # Remember already-open workbooks so the freshly exported one can be identified
+            try: existing_wbs = [wb.Name for wb in win32com.client.GetActiveObject("Excel.Application").Workbooks]
+            except Exception: existing_wbs = []
 
             session.findById("wnd[0]/usr/cntlGV_ALV_CONT/shellcont/shell").pressToolbarContextButton("&MB_EXPORT")
             session.findById("wnd[0]/usr/cntlGV_ALV_CONT/shellcont/shell").selectContextMenuItem("&XXL")
