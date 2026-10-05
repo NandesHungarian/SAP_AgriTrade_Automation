@@ -1,6 +1,6 @@
 # SAP AgriTrade Automation
 
-> ⚠️ **Private Repository** — Contains production-grade SAP scripting tied to live business infrastructure. All company-specific data (T-codes, user IDs, file paths, partner names) has been anonymized in the public-facing scripts in [`Automation-Portfolio`](https://github.com/NandesHungarian/Automation-Portfolio).
+> All company-specific data (T-codes, user IDs, file paths, partner names, locations) has been anonymized for public sharing. Part of my [Automation Portfolio](https://github.com/NandesHungarian/Automation-Portfolio).
 
 ---
 
@@ -18,7 +18,7 @@ A Python-based end-to-end automation system for **daily and weekly sales reporti
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    sap_sales_automation_.py              │
+│                 sap_sales_automation.py                 │
 │                                                         │
 │  1. SAP Login ──► 2. Run Transaction ──► 3. Export XLS  │
 │                                                         │
@@ -26,7 +26,7 @@ A Python-based end-to-end automation system for **daily and weekly sales reporti
 │     ├─ Delete internal/purchase rows                    │
 │     ├─ Load daily FX rate files (EUR/HUF, USD/HUF)      │
 │     ├─ Detect missing freight → Tkinter popup           │
-│     ├─ Calculate: Flat EUR, Freight EUR, Net Flat EUR    │
+│     ├─ Calculate: Flat EUR, Freight EUR, Net Flat EUR   │
 │     ├─ Reorder columns to fixed management layout       │
 │     ├─ Apply conditional formatting (anomaly detection) │
 │     └─ Draw pivot summary table (by location/commodity) │
@@ -36,7 +36,7 @@ A Python-based end-to-end automation system for **daily and weekly sales reporti
          │
          ▼
 ┌─────────────────────────────────────────────────────────┐
-│                    map_generator_.py                     │
+│                     map_generator.py                    │
 │                                                         │
 │  Reads processed .xlsx ──► Extracts shipment locations  │
 │  ──► Folium/Leaflet map ──► Self-contained .html output │
@@ -47,7 +47,7 @@ A Python-based end-to-end automation system for **daily and weekly sales reporti
 
 ## Scripts
 
-### `sap_sales_automation_.py`
+### `sap_sales_automation.py`
 
 The core automation script. Handles the full pipeline from SAP login to finished management report.
 
@@ -62,7 +62,7 @@ The core automation script. Handles the full pipeline from SAP login to finished
 | Column normalization | Maps columns by header name (not fixed index) — robust against SAP layout changes |
 | Anomaly detection | Marks rows red: HUF prices below threshold, internal partners, missing freight on DDP/CPT contracts |
 | Summary table | Draws a pivot-style table at the bottom of the sheet: quantity and weighted avg net price by location, commodity, and crop year |
-| Map integration | After saving the report, optionally launches `map_generator_.py` |
+| Map integration | After saving the report, optionally launches `map_generator.py` |
 
 **SAP interaction flow:**
 1. Checks if SAP GUI is already running; launches `saplogon.exe` if not
@@ -81,13 +81,14 @@ The core automation script. Handles the full pipeline from SAP login to finished
 
 ---
 
-### `map_generator_.py`
+### `map_generator.py`
 
 Standalone interactive HTML logistics map generator.
 
 **Key features:**
 - Reads the finished management report `.xlsx`
-- Geocodes base locations using a predefined coordinate dictionary (no API key required)
+- Geocodes destination cities via OpenStreetMap Nominatim (`geopy`, no API key required) and caches results locally in `city_coordinates.json`
+- Ambiguous or unknown city names trigger a Tkinter picker instead of silently failing
 - Plots shipment markers on a Folium/Leaflet.js map
 - Color-codes by commodity type (e.g. rapeseed vs. sunflower)
 - Adds popup info per marker: partner, quantity, net price, IncoTerm
@@ -102,7 +103,8 @@ Standalone interactive HTML logistics map generator.
 | `win32com.client` | SAP GUI Scripting API, Excel COM automation |
 | `tkinter` + `ttk` | Freight input popup GUI |
 | `openpyxl` | Excel cell-level formatting, formula writing |
-| `pandas` | Data loading and analysis in `map_generator_.py` |
+| `pandas` | Data loading and analysis in `map_generator.py` |
+| `geopy` | City geocoding (OpenStreetMap Nominatim) with local cache |
 | `folium` | Interactive Leaflet.js map generation |
 | `datetime`, `glob`, `shutil` | File handling, date logic, temp file cleanup |
 
@@ -114,14 +116,14 @@ Standalone interactive HTML logistics map generator.
 pip install -r requirements.txt
 ```
 
-On first run, `sap_sales_automation_.py` creates `~/sap_config.txt`:
+On first run, `sap_sales_automation.py` creates `~/sap_config.txt`:
 
 ```
 USERNAME=Your_SAP_Username
 PASSWORD=Your_SAP_Password
 ```
 
-Fill in your credentials and re-run. SAP GUI must be installed with the Scripting API enabled (SAP Logon → Options → Scripting → Enable scripting).
+Fill in your credentials and re-run. Edit the anonymized configuration block at the top of the script (`SAP_CFG_*`, paths) to match your system. SAP GUI must be installed with the Scripting API enabled (SAP Logon → Options → Scripting → Enable scripting).
 
 ---
 
@@ -129,7 +131,6 @@ Fill in your credentials and re-run. SAP GUI must be installed with the Scriptin
 
 - Credentials are stored in a local plaintext file — **never committed to git** (`.gitignore` covers this)
 - All T-codes, plant codes, partner names, and file paths in the public version are anonymized
-- The private version of this repo contains the full production configuration
 
 ---
 

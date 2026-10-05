@@ -8,7 +8,7 @@ pie-chart markers to represent commodity breakdowns.
 Features mutually exclusive layer filtering via JavaScript injection.
 
 Uses Folium (Leaflet.js) and Geopy (Nominatim API).
-Author: Nandor Magyar
+Author: Nándor Magyar
 Disclaimer: Internal location names and paths have been anonymized.
 """
 
