@@ -6,7 +6,7 @@
 
 ## Overview
 
-A Python-based end-to-end automation system for **daily and weekly sales reporting in agricultural commodity trading**, built around SAP ERP integration. The system replaces a manual 45–90 minute reporting workflow with a single script execution.
+A Python-based end-to-end automation system for **daily and weekly sales reporting in agricultural commodity trading**, built around SAP ERP integration. The system replaces a manual 45–60 minute reporting workflow with a single script execution.
 
 **Domain:** Agricultural commodity trading (grains, oilseeds) — sales and logistics operations
 **SAP modules involved:** SD (Sales & Distribution), custom reporting transactions
