@@ -14,10 +14,10 @@ A Python-based end-to-end automation system for **daily and weekly sales reporti
 
 ### Output preview
 
-![Interactive logistics map](docs/images/logistics_map.jpg)
+![Interactive logistics map](images/logistics_map.jpg)
 *Interactive HTML logistics map: loading bases, delivery routes sized by quantity, product layers and hover details.*
 
-![Weekly summary table](docs/images/weekly_summary.jpg)
+![Weekly summary table](images/weekly_summary.jpg)
 *Summary table appended to the weekly report: quantity and weighted average net EUR price by base, commodity and crop year.*
 
 *Sample output generated from test data.*
