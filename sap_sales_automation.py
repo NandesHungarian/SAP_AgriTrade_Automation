@@ -86,7 +86,7 @@ def ask_freight_popup(mc_num, partner, incoterm_full, default_curr="EUR"):
     root.geometry("380x240")
     root.eval('tk::PlaceWindow . center')
 
-    tk.Label(root, text=f"Freight rate required!", font=("Arial", 11, "bold"), fg="red").pack(pady=5)
+    tk.Label(root, text="Freight rate required!", font=("Arial", 11, "bold"), fg="red").pack(pady=5)
     tk.Label(root, text=f"IncoTerm: {incoterm_full}", font=("Arial", 10, "bold")).pack(pady=2)
     tk.Label(root, text=f"Contract/MC: {mc_num}").pack()
     tk.Label(root, text=f"Partner: {partner}").pack()
